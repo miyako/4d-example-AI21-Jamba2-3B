@@ -1,2 +1,1 @@
-# 4d-example-AI21-Jamba2-3B
-AI21 Jamba2 3B in GGUF
+## [ai21labs/AI21-Jamba2-3B](https://huggingface.co/ai21labs/AI21-Jamba2-3B)
