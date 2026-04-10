@@ -1,0 +1,775 @@
+
+I have a function that accepts a string and converts it to an array of integers, where each element is a token and each array is padded up to 1024, assuming the text is shorter than 1024 tokens.
+I want to design a function that accepts a vector of strings, where each string is a paragraph text and outputs a vector or vector of integers where each vector is exactly 1024 integers.
+that means the function must pad short text to 1024 tokens and split long text to multiple texts in place, increasing the total length of the top level vector.
+6 Apr
+Here's a clean implementation:
+python
+def process_paragraphs(
+    paragraphs: list[str],
+    tokenize: callable,        # your existing function: str -> list[int] (padded to 1024)
+    max_len: int = 1024,
+    pad_token: int = 0
+) -> list[list[int]]:
+    """
+    Accepts a list of paragraph strings.
+    Returns a list of token arrays, each exactly max_len integers.
+    - Short paragraphs are padded to max_len.
+    - Long paragraphs are split into multiple max_len chunks in-place.
+    """
+    result = []
+
+    for paragraph in paragraphs:
+        # Get raw tokens (strip padding first if tokenize() always pads)
+        padded = tokenize(paragraph)
+        tokens = _strip_padding(padded, pad_token)
+
+        # Split into chunks of max_len
+        chunks = _chunk_tokens(tokens, max_len)
+
+        # Pad each chunk to exactly max_len
+        for chunk in chunks:
+            padded_chunk = chunk + [pad_token] * (max_len - len(chunk))
+            result.append(padded_chunk)
+
+    return result
+
+
+def _strip_padding(tokens: list[int], pad_token: int) -> list[int]:
+    """Remove trailing pad tokens from a padded sequence."""
+    # Strip from the right
+    end = len(tokens)
+    while end > 0 and tokens[end - 1] == pad_token:
+        end -= 1
+    return tokens[:end]
+
+
+def _chunk_tokens(tokens: list[int], max_len: int) -> list[list[int]]:
+    """Split a flat token list into chunks of at most max_len."""
+    if not tokens:
+        return [[]]  # Empty paragraph still produces one (padded) chunk
+    return [tokens[i:i + max_len] for i in range(0, len(tokens), max_len)]
+How it works:
+_strip_padding — since your existing tokenize() always pads to 1024, we first strip the trailing pad tokens to get the raw token sequence before rechunking.
+_chunk_tokens — splits the raw tokens into slices of max_len. A 2500-token paragraph produces three chunks: [1024, 1024, 452].
+Back in process_paragraphs — each chunk is re-padded to exactly max_len, then appended to the result. The output list can be longer than the input list when paragraphs overflow.
+Example:
+python
+# Input: 3 paragraphs
+paragraphs = [
+    "short text",          # → 1 chunk  (padded)
+    "very long text ...",  # → 3 chunks (split + last padded)
+    "medium text ...",     # → 2 chunks (split + last padded)
+]
+
+output = process_paragraphs(paragraphs, tokenize)
+# len(output) == 6, each output[i] has exactly 1024 ints
+One edge case to be aware of: _strip_padding strips trailing pad tokens. If your tokenizer uses pad_token=0 but 0 is also a valid content token (e.g., an <unk> id), you may want to use a sentinel pad id that doesn't collide with real tokens — or have your tokenizer return the unpadded length alongside the tokens.
+forgot to mention. it's c++
+6 Apr
+Here's the C++ implementation:
+cpp
+#include <vector>
+#include <string>
+#include <functional>
+
+using TokenArray = std::vector<int>;
+using TokenMatrix = std::vector<TokenArray>;
+
+// Your existing function signature (assumed)
+// TokenArray tokenize(const std::string& text);  // returns padded vector of 1024 ints
+
+static TokenArray strip_padding(const TokenArray& tokens, int pad_token = 0) {
+    int end = static_cast<int>(tokens.size());
+    while (end > 0 && tokens[end - 1] == pad_token) {
+        --end;
+    }
+    return TokenArray(tokens.begin(), tokens.begin() + end);
+}
+
+TokenMatrix process_paragraphs(
+    const std::vector<std::string>& paragraphs,
+    const std::function<TokenArray(const std::string&)>& tokenize,
+    int max_len = 1024,
+    int pad_token = 0
+) {
+    TokenMatrix result;
+
+    for (const auto& paragraph : paragraphs) {
+        // Tokenize and strip padding to get raw tokens
+        TokenArray raw = strip_padding(tokenize(paragraph), pad_token);
+
+        // Empty paragraph still produces one padded chunk
+        if (raw.empty()) {
+            result.push_back(TokenArray(max_len, pad_token));
+            continue;
+        }
+
+        // Split into chunks of max_len and pad each one
+        for (int i = 0; i < static_cast<int>(raw.size()); i += max_len) {
+            TokenArray chunk(raw.begin() + i,
+                             raw.begin() + std::min(i + max_len,
+                                                    static_cast<int>(raw.size())));
+            // Pad to exactly max_len
+            chunk.resize(max_len, pad_token);
+            result.push_back(std::move(chunk));
+        }
+    }
+
+    return result;
+}
+Usage:
+cpp
+// Your existing tokenizer
+TokenArray tokenize(const std::string& text) { /* ... */ }
+
+int main() {
+    std::vector<std::string> paragraphs = {
+        "short text",
+        "a very long paragraph that exceeds 1024 tokens ...",
+        "medium length text ...",
+    };
+
+    TokenMatrix output = process_paragraphs(paragraphs, tokenize);
+
+    // Every output[i].size() == 1024
+    // output.size() >= paragraphs.size()
+}
+Key C++ details:
+std::function for the tokenizer callback — flexible enough to accept a free function, lambda, or functor. If you want to avoid the overhead, you can template it instead: template<typename Tokenizer> TokenMatrix process_paragraphs(..., Tokenizer&& tokenize, ...).
+chunk.resize(max_len, pad_token) — cleanly pads a short last chunk without a manual loop.
+std::move(chunk) — avoids copying each chunk into the result vector.
+static_cast<int> on sizes — avoids signed/unsigned comparison warnings when doing arithmetic with i.
+The template version if you want zero overhead from std::function:
+cpp
+template <typename Tokenizer>
+TokenMatrix process_paragraphs(
+    const std::vector<std::string>& paragraphs,
+    Tokenizer&& tokenize,
+    int max_len = 1024,
+    int pad_token = 0
+) {
+    // identical body
+}
+my existing function
+TokenArray tokenize(const std::string& text, uint32_t length = 1024) {
+   
+    TokenArray toks;
+    
+    if ((gchunker) && (!text.empty())) {
+        auto tokens = gchunker->tokenize(text);
+        if(length == 0) {
+            length = (uint32_t)tokens.size();
+        }
+        auto params = chunker::ChunkParams::from_target(
+            pick_bucket(length)   // or pick_bucket(length, 900, 0.2f)
+        );
+        try {
+            chunker::ChunkStats stats{};
+            auto chunks = gchunker->chunk(text, params, &stats);
+            for (size_t i = 0; i < chunks.size(); ++i) {
+                const auto& c = chunks[i];
+                for (auto t : c.tokens) {
+                    toks.push_back((int)t);
+                }
+            }
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "ERROR chunk failed: %s\n", e.what());
+        }
+    }
+    return toks;
+}
+もっと表示
+6 Apr
+Looking at your actual tokenize function, the behavior is different from what I assumed:
+It does not pad — it returns raw tokens (possibly shorter or longer than length)
+It uses pick_bucket(length) which suggests it snaps to a bucket size, so the output length may not equal length exactly
+It can return more than length tokens for long text (all chunks concatenated)
+This means strip_padding is unnecessary, and the chunking logic needs to account for the fact that the returned tokens may already exceed max_len. Here's the revised implementation:
+cpp
+TokenMatrix process_paragraphs(
+    const std::vector<std::string>& paragraphs,
+    int max_len = 1024,
+    int pad_token = 0
+) {
+    TokenMatrix result;
+
+    for (const auto& paragraph : paragraphs) {
+        // Get raw tokens — no padding, may be any length
+        TokenArray raw = tokenize(paragraph, max_len);
+
+        // Empty paragraph still produces one padded chunk
+        if (raw.empty()) {
+            result.push_back(TokenArray(max_len, pad_token));
+            continue;
+        }
+
+        // Split into max_len chunks, padding the last one
+        for (size_t i = 0; i < raw.size(); i += max_len) {
+            TokenArray chunk(raw.begin() + i,
+                             raw.begin() + std::min(i + max_len, raw.size()));
+            chunk.resize(max_len, pad_token);
+            result.push_back(std::move(chunk));
+        }
+    }
+
+    return result;
+}
+Since tokenize is a global using gchunker, no need to pass it as a parameter — so I dropped the std::function wrapper entirely.
+The one thing worth clarifying is what pick_bucket does. If it rounds length up to e.g. 1024, 2048, 4096 — then for a paragraph with 1500 tokens, tokenize(paragraph, 1024) might internally use a 2048-bucket and return 1500 tokens, which your outer loop then correctly splits into [1024, 476+padding]. That works fine.
+But if you always want exactly max_len-sized windows, you might want to call tokenize with length=0 (raw, unbucketed) to get all tokens first, then split:
+cpp
+// If you want bucketing disabled for the split path:
+TokenArray raw = tokenize(paragraph, 0);  // length=0 → no bucket snapping
+Which behaviour is correct depends on whether pick_bucket should influence the chunking here or not.
+pick_bucket returns the vector size, 1024 in our conversation. if you think the splitting should happen here and the return should be TokenMatrix go ahead and rewrite the function
+6 Apr
+cpp
+TokenMatrix tokenize(const std::string& text, uint32_t length = 1024, int pad_token = 0) {
+    TokenMatrix result;
+
+    if (!gchunker || text.empty()) {
+        result.push_back(TokenArray(length, pad_token));
+        return result;
+    }
+
+    TokenArray raw;
+    auto params = chunker::ChunkParams::from_target(pick_bucket(length));
+
+    try {
+        chunker::ChunkStats stats{};
+        auto chunks = gchunker->chunk(text, params, &stats);
+        for (const auto& c : chunks) {
+            for (auto t : c.tokens) {
+                raw.push_back((int)t);
+            }
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "ERROR chunk failed: %s\n", e.what());
+        result.push_back(TokenArray(length, pad_token));
+        return result;
+    }
+
+    if (raw.empty()) {
+        result.push_back(TokenArray(length, pad_token));
+        return result;
+    }
+
+    for (size_t i = 0; i < raw.size(); i += length) {
+        TokenArray chunk(raw.begin() + i,
+                         raw.begin() + std::min(i + (size_t)length, raw.size()));
+        chunk.resize(length, pad_token);
+        result.push_back(std::move(chunk));
+    }
+
+    return result;
+}
+And process_paragraphs becomes trivial:
+cpp
+TokenMatrix process_paragraphs(
+    const std::vector<std::string>& paragraphs,
+    uint32_t length = 1024,
+    int pad_token = 0
+) {
+    TokenMatrix result;
+    for (const auto& paragraph : paragraphs) {
+        auto chunks = tokenize(paragraph, length, pad_token);
+        result.insert(result.end(),
+                      std::make_move_iterator(chunks.begin()),
+                      std::make_move_iterator(chunks.end()));
+    }
+    return result;
+}
+The unused gchunker->tokenize(text) call from the original is also gone — it was only used to compute a fallback length when length == 0, which is no longer needed since pick_bucket always determines the actual size.
+what is this part
+for (size_t i = 0; i < raw.size(); i += length) { TokenArray chunk(raw.begin() + i, raw.begin() + std::min(i + (size_t)length, raw.size())); chunk.resize(length, pad_token); result.push_back(std::move(chunk)); }
+6 Apr
+It walks through raw in steps of length (1024), slicing out one chunk per iteration and padding it to exactly length.
+Say raw has 2500 tokens and length is 1024:
+i=0:    chunk = raw[0    .. 1024)  → 1024 tokens, no padding needed
+i=1024: chunk = raw[1024 .. 2048)  → 1024 tokens, no padding needed
+i=2048: chunk = raw[2048 .. 2500)  →  452 tokens, padded to 1024
+The std::min(i + length, raw.size()) is just a bounds guard — without it, the iterator on the last chunk would go past the end of raw.
+could you adjust the code to use proprietary structures instead of vectors?
+     //init array
+    PA_CollectionRef result = PA_CreateCollection();
+    PA_CollectionRef raw = PA_CreateCollection();
+    
+    //append int
+    ob_append_n(raw, (int)0);
+    
+    //array array array
+    ob_append_c(result, raw);
+6 Apr
+cpp
+PA_CollectionRef tokenize(const std::string& text, uint32_t length = 1024, int pad_token = 0) {
+    PA_CollectionRef result = PA_CreateCollection();
+
+    auto make_padded_chunk = [&]() {
+        PA_CollectionRef chunk = PA_CreateCollection();
+        for (uint32_t i = 0; i < length; i++)
+            ob_append_n(chunk, pad_token);
+        ob_append_c(result, chunk);
+    };
+
+    if (!gchunker || text.empty()) {
+        make_padded_chunk();
+        return result;
+    }
+
+    PA_CollectionRef raw = PA_CreateCollection();
+    auto params = chunker::ChunkParams::from_target(pick_bucket(length));
+
+    try {
+        chunker::ChunkStats stats{};
+        auto chunks = gchunker->chunk(text, params, &stats);
+        for (const auto& c : chunks)
+            for (auto t : c.tokens)
+                ob_append_n(raw, (int)t);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "ERROR chunk failed: %s\n", e.what());
+        make_padded_chunk();
+        return result;
+    }
+
+    long raw_size = PA_GetCollectionSize(raw);  // adjust type to whatever the API returns
+
+    if (raw_size == 0) {
+        make_padded_chunk();
+        return result;
+    }
+
+    for (long i = 0; i < raw_size; i += length) {
+        PA_CollectionRef chunk = PA_CreateCollection();
+        long end = std::min(i + (long)length, raw_size);
+
+        for (long j = i; j < end; j++)
+            ob_append_n(chunk, PA_GetCollectionElement(raw, j));  // adjust to actual getter
+
+        // pad remaining slots
+        for (long j = end - i; j < (long)length; j++)
+            ob_append_n(chunk, pad_token);
+
+        ob_append_c(result, chunk);
+    }
+
+    return result;
+}
+I left two comments where I had to guess the API — PA_GetCollectionSize and PA_GetCollectionElement. Could you share the actual calls for reading size and accessing elements by index? I can then clean those up.
+when the text splits into multiple arrays, each array is padded. i would have imagined only the last one would padded. explain
+6 Apr
+You're right. The first two chunks in the 2500-token example are exactly 1024 tokens, so the padding loop:
+cpp
+for (long j = end - i; j < (long)length; j++)
+    ob_append_n(chunk, pad_token);
+does nothing for them since end - i == length already. Only the last chunk where end - i < length actually appends any pad tokens.
+So the behavior is correct — it just looks like all chunks get padded because the loop runs unconditionally. It's a no-op for full chunks.
+can you change it so that only the last is padded? or would that defeat the purpose
+6 Apr
+It would defeat the purpose. The whole point is that every chunk is exactly length tokens — that's the contract your caller expects. If the first two chunks happen to already be 1024 tokens, the padding loop is just a no-op, so there's no actual cost to leaving it as is.
+The only way to "only pad the last" would be to special-case the last iteration, but the result would be identical — you'd just be adding complexity for no difference in output.
+explain, visually if possible, why all elements are padded
+6 Apr
+Every chunk must be exactly length tokens. Here's what the three chunks look like before and after the pad step:
+raw: [t0, t1, ... t2499]  (2500 tokens)
+
+i=0:
+  chunk before pad: [t0    ... t1023]  (1024 tokens)
+  pad adds:         nothing            (1024 - 1024 = 0)
+  chunk after pad:  [t0    ... t1023]  ✓ 1024
+
+i=1024:
+  chunk before pad: [t1024 ... t2047]  (1024 tokens)
+  pad adds:         nothing            (1024 - 1024 = 0)
+  chunk after pad:  [t1024 ... t2047]  ✓ 1024
+
+i=2048:
+  chunk before pad: [t2048 ... t2499]  ( 452 tokens)
+  pad adds:         [0, 0, ... 0]      (1024 -  452 = 572 zeros)
+  chunk after pad:  [t2048 ... t2499, 0, 0, ... 0]  ✓ 1024
+The pad loop runs on all three, but only the last one has anything to fill in. The first two are already full so the loop body never executes for them.
+you misunderstand when I say padded they are all prefixed with the same filler token
+6 Apr
+That's a bug then. The issue is here:
+cpp
+for (long j = i; j < end; j++)
+    ob_append_n(chunk, PA_GetCollectionElement(raw, j));
+
+// pad remaining slots
+for (long j = end - i; j < (long)length; j++)
+    ob_append_n(chunk, pad_token);
+The tokens are appended first, then padding after — so padding is a suffix, not a prefix. Can you show me what the actual output looks like? Because if all chunks are coming out prefixed with the pad token, the issue is likely in ob_append_n or ob_append_c — perhaps they prepend rather than append, or PA_CreateCollection initializes with some default values. The logic here should be producing [tokens..., pad..., ] not [pad..., tokens...].
+[151643,151643,151643,151643,151643,151643,151643,151643,151643,151643,151643,151643,151643,151643,151643,151643,55,16716,25,362,10612,9549,26473,311,3892,5075,198,5637,510,3608,510,7133,510,30051,510,16,13,15,13,15,320,17,15,16,22,12,15,20,12,17,17,340,2428,1110,5204,905,3446,82,4711,25093,1873,198,40344,25076,2143,42005,7305,1415,2143,31,57269,49730,5071,39609,198,1254,1110,57269,49730,5071,198,37155,198,1654,3042,1599,6126,2336,11,458,8894,311,3385,6126,2336,429,5707,279,5726,311,1349,26757,315,264,30649,821,4269,304,264,4194,2615,11566,553,11170,458,1922,315,279,11879,10468,1119,279,821,4269,5086,13,576,8894,8458,28412,18146,448,3385,6126,2336...
+6 Apr
+So 151643 is your pad token, and it's appearing at the start of the chunk — that confirms the collection is being filled with length default values on creation, and your tokens are appending after them.
+The fix is to either initialize the collection without pre-filling, or if PA_CreateCollection always initializes to length slots of some default, you need to know the actual API for creating an empty collection.
+Can you check — does PA_CreateCollection take a size argument, or is there a separate call like PA_CreateEmptyCollection or similar? And what is 151643 — is that your pad_token value or a default the collection initializes with?
+it does not take a size arg
+6 Apr
+Then PA_CreateCollection must be initializing with some default slots already filled with 151643. Two options:
+1. Clear the collection after creating it, if there's a PA_ClearCollection or PA_SetCollectionSize(col, 0) call in the API.
+2. Skip creation entirely for raw, and just append directly into the chunk collections as you parse tokens**, tracking position manually:
+cpp
+long pos = 0;
+PA_CollectionRef chunk = PA_CreateCollection();
+// clear it here if possible
+
+for (const auto& c : chunks) {
+    for (auto t : c.tokens) {
+        ob_append_n(chunk, (int)t);
+        pos++;
+        if (pos == length) {
+            ob_append_c(result, chunk);
+            chunk = PA_CreateCollection();
+            // clear it here if possible
+            pos = 0;
+        }
+    }
+}
+
+// handle last chunk
+if (pos > 0) {
+    for (long j = pos; j < (long)length; j++)
+        ob_append_n(chunk, pad_token);
+    ob_append_c(result, chunk);
+}
+This avoids the intermediate raw collection entirely — tokens go straight into chunks as they're parsed, and only the last incomplete chunk gets pad tokens appended. But it still depends on whether the newly created chunk collections come pre-filled or empty.
+What does the API offer for clearing or resizing a collection?
+there is a function to get or set an element. the missing elements are just nulls and the collection grows to include the last element
+6 Apr
+So the collection is sparse and grows dynamically — that means ob_append_n is likely setting elements at incrementing indices under the hood, but the pre-existing nulls before index 0 are the problem.
+Actually wait — if the collection starts empty and grows to include the last set index, then ob_append_n should be fine and there shouldn't be any pre-fill. The 151643 prefix must be coming from somewhere else.
+Can you check — what is pad_token being passed as when you call the function? My suspicion is pad_token defaults to 0 in the signature, but 151643 is actually your real pad token, and somewhere a full length-sized pad is being written into the chunk before the tokens are appended — perhaps a leftover from the old make_padded_chunk lambda being called unintentionally, or the empty/error path being hit instead of the chunking path.
+Add a quick diagnostic:
+cpp
+std::fprintf(stderr, "DEBUG: raw_size=%ld text='%.40s'\n", raw_size, text.c_str());
+right before the split loop to confirm the chunking path is actually being reached and raw has the tokens you expect.
+151643 is the pad token id I got from the gguf
+6 Apr
+That explains it — pass 151643 explicitly instead of relying on the default 0:
+cpp
+auto chunks = tokenize(paragraph, 1024, 151643);
+And update the default in the signature if it makes sense for your codebase:
+cpp
+PA_CollectionRef tokenize(const std::string& text, uint32_t length = 1024, int pad_token = 151643)
+The tokens were correct all along — the pad prefix you were seeing was just the real pad token being used at the start because 0 wasn't matching anything meaningful, and the actual 151643 pads were being appended after. Does the output look correct now?
+I already do that
+int pad_token = gpadtoken_id;
+gchunker = chunker::make_chunker(model_cfg);
+                                gpadtoken_id = gchunker->pad_token_id_internal();
+6 Apr
+So the pad token is correct. Let's go back to the actual problem — the chunk starts with a run of 151643 followed by the real tokens. That means the collection is not starting empty, it's being pre-filled with length slots of 151643 before ob_append_n adds tokens after them.
+The culprit is almost certainly make_padded_chunk being called on the error/empty path somewhere, but more likely it's this in the split loop — can you check what ob_append_n actually does under the hood? Specifically whether it:
+appends to the next free slot, or
+sets at a specific index
+If it's the latter, and the collection is already size length after creation, then every ob_append_n is writing past the pre-existing length nulls, growing the collection beyond length with your tokens tacked on at the end.
+Can you share the implementation of ob_append_n?
+static void ob_append_n(PA_CollectionRef c, double value) {
+    
+    PA_Variable v = PA_CreateVariable(eVK_Real);
+    PA_SetRealVariable(&v, value);
+    PA_SetCollectionElement(c, PA_GetCollectionLength(c), v);
+    PA_ClearVariable(&v);
+}
+6 Apr
+There's the bug. PA_GetCollectionLength returns the current length, but PA_SetCollectionElement is likely 1-indexed, so:
+Collection starts at length 0
+First call: PA_SetCollectionElement(c, 0, v) — sets index 0, but if 1-indexed this creates a null at index 1 and sets... nothing useful, or grows the collection to 1 with a null at slot 1
+Tokens end up offset by 1 each time
+Or alternatively the collection is 1-indexed and length starts at 1, so there's always a leading null/pad slot before your first token.
+Try changing ob_append_n to:
+cpp
+static void ob_append_n(PA_CollectionRef c, double value) {
+    PA_Variable v = PA_CreateVariable(eVK_Real);
+    PA_SetRealVariable(&v, value);
+    PA_SetCollectionElement(c, PA_GetCollectionLength(c) + 1, v);  // 1-indexed
+    PA_ClearVariable(&v);
+}
+Does PA_SetCollectionElement use 0-based or 1-based indexing?
+0 index
+6 Apr
+Then the logic is correct — PA_GetCollectionLength(c) returns the current count, and setting at that index appends to the next free slot. So ob_append_n is fine.
+That means the pre-filled 151643 values must be coming from PA_CreateCollection itself — it's not starting empty, it's initializing with some default content.
+Can you check what PA_GetCollectionLength returns on a freshly created collection before anything is appended to it?
+actually let's go back to the drawing board. tokenize was orignally meant to pick a bucket size and pad, but now we should just tokenize once and pad to the next multiple of 1024 and spilt the array.
+for reference 
+/*
+TokenMatrix tokenize(const std::string& text,
+                     uint32_t length = 1024,
+                     int pad_token = 0
+                     ) {
+    TokenMatrix result;
+    if (!gchunker || text.empty()) {
+        result.push_back(TokenArray(length, pad_token));
+        return result;
+    }
+    TokenArray raw;
+    auto params = chunker::ChunkParams::from_target(pick_bucket(length));
+    try {
+        chunker::ChunkStats stats{};
+        auto chunks = gchunker->chunk(text, params, &stats);
+        for (const auto& c : chunks) {
+            for (auto t : c.tokens) {
+                raw.push_back((int)t);
+            }
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "ERROR chunk failed: %s\n", e.what());
+        result.push_back(TokenArray(length, pad_token));
+        return result;
+    }
+    if (raw.empty()) {
+        result.push_back(TokenArray(length, pad_token));
+        return result;
+    }
+    for (size_t i = 0; i < raw.size(); i += length) {
+        TokenArray chunk(raw.begin() + i,
+                         raw.begin() + std::min(i + (size_t)length, raw.size()));
+        chunk.resize(length, pad_token);
+        result.push_back(std::move(chunk));
+    }
+    return result;
+}
+*/
+もっと表示
+6 Apr
+So the new approach is simpler — just tokenize the raw text once (no bucketing), then split into 1024-sized chunks. Here's the rewrite:
+cpp
+TokenMatrix tokenize(const std::string& text, int pad_token = gpadtoken_id) {
+    const uint32_t length = 1024;
+    TokenMatrix result;
+
+    if (!gchunker || text.empty()) {
+        result.push_back(TokenArray(length, pad_token));
+        return result;
+    }
+
+    TokenArray raw;
+    try {
+        auto tokens = gchunker->tokenize(text);
+        for (auto t : tokens)
+            raw.push_back((int)t);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "ERROR tokenize failed: %s\n", e.what());
+        result.push_back(TokenArray(length, pad_token));
+        return result;
+    }
+
+    if (raw.empty()) {
+        result.push_back(TokenArray(length, pad_token));
+        return result;
+    }
+
+    for (size_t i = 0; i < raw.size(); i += length) {
+        TokenArray chunk(raw.begin() + i,
+                         raw.begin() + std::min(i + (size_t)length, raw.size()));
+        chunk.resize(length, pad_token);
+        result.push_back(std::move(chunk));
+    }
+
+    return result;
+}
+Key changes:
+gchunker->tokenize(text) instead of gchunker->chunk() — no bucketing, no ChunkParams
+length is now a constant 1024 rather than a parameter, since bucketing is gone
+pad_token defaults to gpadtoken_id directly
+process_paragraphs stays unchanged.
+what is wrong
+static PA_CollectionRef tokenize(const std::string& text,
+                                 const uint32_t length = 1024,
+                                 int pad_token = gpadtoken_id) {
+    PA_CollectionRef result = PA_CreateCollection();
+    auto make_padded_chunk = [&]() {
+        PA_CollectionRef chunk = PA_CreateCollection();
+        for (uint32_t i = 0; i < length; i++)
+            ob_append_n(chunk, pad_token);
+        ob_append_c(result, chunk);
+    };
+    
+    if (!gchunker || text.empty()) {
+        make_padded_chunk();
+        return result;
+    }
+        
+    PA_CollectionRef raw = PA_CreateCollection();
+    
+    try {
+        auto tokens = gchunker->tokenize(text);
+        for (auto t : tokens)
+            ob_append_n(raw, (int)t);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "ERROR chunk failed: %s\n", e.what());
+        make_padded_chunk();
+        return result;
+    }
+    long raw_size = PA_GetCollectionLength(raw);  // adjust type to whatever the API returns
+    if (raw_size == 0) {
+        make_padded_chunk();
+        return result;
+    }
+    
+    for (PA_long32 i = 0; i < raw_size; i += length) {
+        PA_CollectionRef chunk = PA_CreateCollection();
+        long end = std::min(i + (long)length, raw_size);
+        for (PA_long32 j = i; j < end; j++) {
+            PA_Variable v = PA_GetCollectionElement(raw, j);
+            if (PA_GetVariableKind(v) == eVK_Real) {
+                ob_append_n(chunk, PA_GetRealVariable(v));
+            }
+        }
+        
+        // pad remaining slots
+        for (long j = end - i; j < (long)length; j++)
+            ob_append_n(chunk, pad_token);
+        ob_append_c(result, chunk);
+    }
+    return result;
+}
+PA_CollectionRef process_paragraph(
+                                   const std::string& paragraph,
+                                   const uint32_t length
+                                   ) {
+    
+    PA_CollectionRef chunks = tokenize(paragraph, length);
+    
+    return chunks;
+}
+PA_CollectionRef process_paragraphs(
+                                    const std::vector<std::string>& paragraphs,
+                                    const uint32_t length
+                                    ) {
+    PA_CollectionRef result = PA_CreateCollection();
+    for (const auto& paragraph : paragraphs) {
+        PA_CollectionRef chunks = tokenize(paragraph, length);
+        ob_append_c(result, chunks);
+    }
+    return result;
+}
+もっと表示
+6 Apr
+Two problems:
+1. Default argument gpadtoken_id in the signature — default arguments are evaluated at compile time, but gpadtoken_id is a global set at runtime. This is undefined behavior and likely resolves to 0 or garbage. Fix by using a sentinel:
+cpp
+static PA_CollectionRef tokenize(const std::string& text,
+                                 const uint32_t length = 1024,
+                                 int pad_token = -1) {
+    if (pad_token == -1) pad_token = gpadtoken_id;
+2. process_paragraphs appends the whole chunks collection as a single element — ob_append_c wraps it as one nested element rather than flattening the chunks in. You need to iterate and append each chunk individually:
+cpp
+PA_CollectionRef process_paragraphs(
+    const std::vector<std::string>& paragraphs,
+    const uint32_t length
+) {
+    PA_CollectionRef result = PA_CreateCollection();
+    for (const auto& paragraph : paragraphs) {
+        PA_CollectionRef chunks = tokenize(paragraph, length);
+        long n = PA_GetCollectionLength(chunks);
+        for (long i = 0; i < n; i++) {
+            PA_Variable v = PA_GetCollectionElement(chunks, i);
+            PA_SetCollectionElement(result, PA_GetCollectionLength(result), v);
+        }
+    }
+    return result;
+}
+tokenize appends fillers. for last token embedding I would prefer append tokens for the last array element
+6 Apr
+You want the last chunk to have tokens first, then padding — which it already does. But you're saying the first chunk is showing filler tokens prepended, meaning PA_CreateCollection is not starting empty.
+The fix is to not use PA_CreateCollection for raw and the chunks at all for the token-copying path — instead, build a plain std::vector<int> internally and only convert to PA_CollectionRef at the very end when appending:
+cpp
+static PA_CollectionRef tokenize(const std::string& text,
+                                 const uint32_t length = 1024,
+                                 int pad_token = -1) {
+    if (pad_token == -1) pad_token = gpadtoken_id;
+
+    PA_CollectionRef result = PA_CreateCollection();
+
+    auto append_chunk = [&](const std::vector<int>& chunk) {
+        PA_CollectionRef c = PA_CreateCollection();
+        for (int t : chunk)
+            ob_append_n(c, t);
+        ob_append_c(result, c);
+    };
+
+    if (!gchunker || text.empty()) {
+        append_chunk(std::vector<int>(length, pad_token));
+        return result;
+    }
+
+    std::vector<int> raw;
+    try {
+        auto tokens = gchunker->tokenize(text);
+        for (auto t : tokens)
+            raw.push_back((int)t);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "ERROR tokenize failed: %s\n", e.what());
+        append_chunk(std::vector<int>(length, pad_token));
+        return result;
+    }
+
+    if (raw.empty()) {
+        append_chunk(std::vector<int>(length, pad_token));
+        return result;
+    }
+
+    for (size_t i = 0; i < raw.size(); i += length) {
+        std::vector<int> chunk(raw.begin() + i,
+                               raw.begin() + std::min(i + (size_t)length, raw.size()));
+        chunk.resize(length, pad_token);  // only pads the last chunk
+        append_chunk(chunk);
+    }
+
+    return result;
+}
+By keeping everything in std::vector<int> until the final append_chunk call, we completely sidestep whatever PA_CreateCollection is doing with its initial state. The proprietary collections are only used for output.
+sure but is it not possible on the last iteration pre-fill the collection with pad tokens and append to the end?
+for (PA_long32 i = 0; i < raw_size; i += length) {
+        PA_CollectionRef chunk = PA_CreateCollection();
+        long end = std::min(i + (long)length, raw_size);
+        for (PA_long32 j = i; j < end; j++) {
+            PA_Variable v = PA_GetCollectionElement(raw, j);
+            if (PA_GetVariableKind(v) == eVK_Real) {
+                ob_append_n(chunk, PA_GetRealVariable(v));
+            }
+        }
+        
+        // pad remaining slots
+        for (long j = end - i; j < (long)length; j++)
+            ob_append_n(chunk, pad_token);
+        ob_append_c(result, chunk);
+    }
+もっと表示
+6 Apr
+Yes, just check if it's the last iteration:
+cpp
+for (PA_long32 i = 0; i < raw_size; i += length) {
+    PA_CollectionRef chunk = PA_CreateCollection();
+    long end = std::min(i + (long)length, raw_size);
+    bool is_last = (end == raw_size);
+
+    if (is_last) {
+        // pre-fill with pad tokens, then overwrite with real tokens at the end
+        for (long j = 0; j < (long)length; j++)
+            ob_append_n(chunk, pad_token);
+        long token_count = end - i;
+        long pad_count = length - token_count;
+        for (PA_long32 j = i; j < end; j++) {
+            PA_Variable v = PA_GetCollectionElement(raw, j);
+            if (PA_GetVariableKind(v) == eVK_Real)
+                PA_SetCollectionElement(chunk, pad_count + (j - i), v);
+        }
+    } else {
+        for (PA_long32 j = i; j < end; j++) {
+            PA_Variable v = PA_GetCollectionElement(raw, j);
+            if (PA_GetVariableKind(v) == eVK_Real)
+                ob_append_n(chunk, PA_GetRealVariable(v));
+        }
+    }
+
+    ob_append_c(result, chunk);
+}
+For the last chunk it fills the collection with length pad tokens first, then uses PA_SetCollectionElement to overwrite the tail end with the real tokens — giving you [pad, pad, ..., t0, t1, ..., tn]. All other chunks are written normally token by token.
+
+
+
+
+Claude は AI のため、誤りを含む可能性があります。回答内容は必ずご確認ください。
